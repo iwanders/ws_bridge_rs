@@ -2,9 +2,11 @@
 name = "ws_bridge_rs"
 version = "0.1.0"
 authors = ["Ivor Wanders <ivor@iwanders.net>"]
-edition = "2018"
+edition = "2021"
 license = "MIT OR Apache-2.0"
 
 
 [dependencies]
 clap = "2.33.3"
+tokio-tungstenite = "0.16.0"
+tokio = { version = "1.14.0", features = ["rt", "net", "rt-multi-thread"] }
