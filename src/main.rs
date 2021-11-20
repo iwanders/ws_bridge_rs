@@ -1,16 +1,17 @@
 extern crate clap;
+
 use clap::{App, Arg, SubCommand};
 
 use std::io;
 use tokio::io::Interest;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::tokio::io::AsyncReadExt;
+
 extern crate tokio;
 
 type Error = Box<dyn std::error::Error>;
-
 
 
 async fn tcp_to_ws(bind_location: &str, dest_location: &str)  -> Result<(), Error>{
@@ -21,6 +22,8 @@ async fn tcp_to_ws(bind_location: &str, dest_location: &str)  -> Result<(), Erro
         handle_tcp_connection(socket, dest_location).await;
     }
 }
+
+
 
 
 async fn handle_tcp_connection(mut src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
@@ -36,158 +39,17 @@ async fn handle_tcp_connection(mut src_stream: TcpStream, dest_location: &str) -
 
     // Spawn two tasks, one gets a key, the other sets a key
     let dest_to_src = tokio::spawn(async move {
-        loop
-        {
-            let mut buffer = [0; 4096];
-            let ready = dest_read.ready(Interest::READABLE).await;
-            let unwrap_ready;
-            match ready {
-                Ok(ready) => {
-                    unwrap_ready = ready;
-                },
-                _ => {
-                    break;
-                }
-            }
-
-            let write_ready = src_write.ready(Interest::WRITABLE).await;
-            let unwrap_write_ready;
-            match write_ready {
-                Ok(ready) => {
-                    unwrap_write_ready = ready;
-                },
-                _ => {
-                    break;
-                }
-            }
-
-            if unwrap_ready.is_readable() && unwrap_write_ready.is_writable() {
-                let n = dest_read.try_read(&mut buffer[..]);
-                        println!("The bytes: {:?}",n);
-                match n {
-                    Ok(0) => {break;},
-                    Ok(n) => {
-                        println!("The bytes: {:?}", &buffer[..n]);
-                        src_write.write_all(&buffer[..n]).await;
-                    },
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(_) => {
-                        println!("Something is wrong: {:?}", n);
-                        break;
-                    }
-                }
-            }
-        }
+        tokio::io::copy(&mut dest_read, &mut src_write).await;
     });
 
     let src_to_dest = tokio::spawn(async move {
-        loop
-        {
-            let mut buffer = [0; 4096];
-            let ready = src_read.ready(Interest::READABLE).await;
-            let unwrap_ready;
-            match ready {
-                Ok(ready) => {
-                    unwrap_ready = ready;
-                },
-                _ => {
-                    break;
-                }
-            }
-
-            let write_ready = dest_write.ready(Interest::WRITABLE).await;
-            let unwrap_write_ready;
-            match write_ready {
-                Ok(ready) => {
-                    unwrap_write_ready = ready;
-                },
-                _ => {
-                    break;
-                }
-            }
-
-            if unwrap_ready.is_readable() && unwrap_write_ready.is_writable() {
-                let n = src_read.try_read(&mut buffer[..]);
-                        println!("The bytes: {:?}",n);
-                match n {
-                    Ok(0) => {break;},
-                    Ok(n) => {
-                        println!("The bytes: {:?}", &buffer[..n]);
-                        dest_write.write_all(&buffer[..n]).await;
-                    },
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(_) => {
-                        println!("Something is wrong: {:?}", n);
-                        break;
-                    }
-                }
-            }
-        }
+        tokio::io::copy(&mut src_read, &mut dest_write).await;
+        
     });
 
     dest_to_src.await.unwrap();
     src_to_dest.await.unwrap();
 
-    /*
-    loop {
-        let ready = stream.ready(Interest::READABLE | Interest::WRITABLE).await?;
-        // let dest_ready = dest_stream.ready(Interest::READABLE | Interest::WRITABLE).await?;
-
-        // From stream to destination stream.
-        if ready.is_readable() {
-            let mut data = vec![0; 1024];
-            // Try to read data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-            match stream.try_read(&mut data) {
-                Ok(0) => {
-                    dest_stream.shutdown().await?;
-                    break
-                },
-                Ok(n) => {
-                    println!("read {} bytes", n);        
-                    dest_stream.write_all(&data).await?;
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    continue;
-                }
-                Err(e) => {
-                    return Err(e.into());
-                }
-            }
-        }
-
-        // From destination stream to stream.
-        if ready.is_writable() {
-            // Try to write data, this may still fail with `WouldBlock`
-            // if the readiness event is a false positive.
-            if (dest_ready.is_readable())
-            {
-                let mut data = vec![0; 1024];
-                match dest_stream.try_read(&mut data) {
-                    Ok(0) => {
-                        stream.shutdown().await?;
-                        break
-                    },
-                    Ok(n) => {
-                        println!("read {} bytes", n);        
-                        stream.write_all(&data).await?;
-                    }
-                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
-                        continue;
-                    }
-                    Err(e) => {
-                        return Err(e.into());
-                    }
-                }
-            }
-
-        }
-    }
-    */
     Ok(())
 }
 
