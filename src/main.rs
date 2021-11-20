@@ -1,12 +1,12 @@
 extern crate clap;
 use clap::{App, Arg, SubCommand};
 
-
 use std::io;
 use tokio::io::Interest;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::io::AsyncWriteExt;
 
+use crate::tokio::io::AsyncReadExt;
 extern crate tokio;
 
 type Error = Box<dyn std::error::Error>;
@@ -23,12 +23,119 @@ async fn tcp_to_ws(bind_location: &str, dest_location: &str)  -> Result<(), Erro
 }
 
 
-async fn handle_tcp_connection(mut stream: TcpStream, dest_location: &str) -> Result<(), Error> {
+async fn handle_tcp_connection(mut src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
+    
+    let mut dest_stream = TcpStream::connect(dest_location).await?;
+    let (mut dest_read, mut dest_write) = dest_stream.into_split();
+    let (mut src_read, mut src_write) = src_stream.into_split();
 
-   let mut dest_stream = TcpStream::connect(dest_location).await?;
-   loop {
+    // Now, we make two tasks.
+    // dest_read -> src_write
+    // src_read ->  dest_write
+
+
+    // Spawn two tasks, one gets a key, the other sets a key
+    let dest_to_src = tokio::spawn(async move {
+        loop
+        {
+            let mut buffer = [0; 4096];
+            let ready = dest_read.ready(Interest::READABLE).await;
+            let unwrap_ready;
+            match ready {
+                Ok(ready) => {
+                    unwrap_ready = ready;
+                },
+                _ => {
+                    break;
+                }
+            }
+
+            let write_ready = src_write.ready(Interest::WRITABLE).await;
+            let unwrap_write_ready;
+            match write_ready {
+                Ok(ready) => {
+                    unwrap_write_ready = ready;
+                },
+                _ => {
+                    break;
+                }
+            }
+
+            if unwrap_ready.is_readable() && unwrap_write_ready.is_writable() {
+                let n = dest_read.try_read(&mut buffer[..]);
+                        println!("The bytes: {:?}",n);
+                match n {
+                    Ok(0) => {break;},
+                    Ok(n) => {
+                        println!("The bytes: {:?}", &buffer[..n]);
+                        src_write.write_all(&buffer[..n]).await;
+                    },
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(_) => {
+                        println!("Something is wrong: {:?}", n);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let src_to_dest = tokio::spawn(async move {
+        loop
+        {
+            let mut buffer = [0; 4096];
+            let ready = src_read.ready(Interest::READABLE).await;
+            let unwrap_ready;
+            match ready {
+                Ok(ready) => {
+                    unwrap_ready = ready;
+                },
+                _ => {
+                    break;
+                }
+            }
+
+            let write_ready = dest_write.ready(Interest::WRITABLE).await;
+            let unwrap_write_ready;
+            match write_ready {
+                Ok(ready) => {
+                    unwrap_write_ready = ready;
+                },
+                _ => {
+                    break;
+                }
+            }
+
+            if unwrap_ready.is_readable() && unwrap_write_ready.is_writable() {
+                let n = src_read.try_read(&mut buffer[..]);
+                        println!("The bytes: {:?}",n);
+                match n {
+                    Ok(0) => {break;},
+                    Ok(n) => {
+                        println!("The bytes: {:?}", &buffer[..n]);
+                        dest_write.write_all(&buffer[..n]).await;
+                    },
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        continue;
+                    }
+                    Err(_) => {
+                        println!("Something is wrong: {:?}", n);
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    dest_to_src.await.unwrap();
+    src_to_dest.await.unwrap();
+
+    /*
+    loop {
         let ready = stream.ready(Interest::READABLE | Interest::WRITABLE).await?;
-        let dest_ready = dest_stream.ready(Interest::READABLE | Interest::WRITABLE).await?;
+        // let dest_ready = dest_stream.ready(Interest::READABLE | Interest::WRITABLE).await?;
 
         // From stream to destination stream.
         if ready.is_readable() {
@@ -80,6 +187,7 @@ async fn handle_tcp_connection(mut stream: TcpStream, dest_location: &str) -> Re
 
         }
     }
+    */
     Ok(())
 }
 
