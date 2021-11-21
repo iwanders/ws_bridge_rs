@@ -5,6 +5,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio;
 use tokio::io::AsyncReadExt;
 
+use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::{connect_async, accept_async, tungstenite::protocol::Message};
 
 use futures_util::StreamExt;
@@ -27,13 +28,21 @@ async fn tcp_to_ws(bind_location: &str, dest_location: &str)  -> Result<(), Erro
     }
 }
 
-async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
+async fn handle_tcp_to_ws(mut src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
 
+    let  (ws, _) = match connect_async(dest_location).await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("Something went wrong connecting {:?}", e);
+            src_stream.shutdown().await;
+            return Err(Box::new(e));
+        }
+    };
     let (mut tcp_src_read, tcp_src_write) = src_stream.into_split();
-    let  (ws, _) = connect_async(dest_location).await.expect("Failed to connect");
 
     // Split the websocket.
-    let (mut write, read) = ws.split();
+    let (mut write, mut read) = ws.split();
 
     // Consume from the websocket.
     tokio::spawn(async move {
@@ -45,6 +54,7 @@ async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<
                     Err(p) =>
                     {
                         debug!("Err {:?}", p);
+                        tcp_src_write.shutdown();
                         return tcp_src_write;
                     }
                 };
@@ -52,6 +62,10 @@ async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<
                 let data = match msg
                 {
                     Message::Binary(v) => v,
+                    Message::Close(m) => {
+                        trace!("Encountered close message {:?}", m);
+                        return tcp_src_write;
+                    }
                     other => {
                         error!("Encountered unhandled data on websocket {:?}", other);
                         return tcp_src_write;
@@ -73,15 +87,29 @@ async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<
             match tcp_src_read.read(&mut buf).await {
                 // Return value of `Ok(0)` signifies that the remote has
                 // closed
-                Ok(0) => return,
+                Ok(0) => {
+                    debug!("Tcp read returned 0, remote has closed.");
+                    // Close the websocket.
+                    write.send(Message::Close(None)).await;
+                    return;
+                },
                 Ok(n) => {
                     trace!("from tcp: {:?}", buf[..n].to_vec());
                     // send to the websocket.
-                    write.send(Message::Binary(buf[..n].to_vec())).await.unwrap();
+                    match write.send(Message::Binary(buf[..n].to_vec())).await
+                    {
+                        Ok(_) => {continue;},
+                        Err(e) => {
+                            return;
+                        },
+                    }
                 }
-                Err(_) => {
+                Err(e) => {
                     // Unexpected socket error. There isn't much we can do
                     // here so just stop processing.
+                    error!("Unexpected error {:?}", e);
+                    // Close the websocket.
+                    write.close();
                     return;
                 }
             }
@@ -97,23 +125,40 @@ async fn ws_to_tcp(bind_location: &str, dest_location: &str)  -> Result<(), Erro
 
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        handle_ws_to_tcp(socket, dest_location).await?;
+        match handle_ws_to_tcp(socket, dest_location).await
+        {
+            Ok(v) => {},
+            Err(e) => {
+                error!("{:?} (dest: {})", e, dest_location);
+            }
+        }
     }
 }
 
 use futures_util::SinkExt;
 use crate::tokio::io::AsyncWriteExt;
-async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
+use std::borrow::Cow;
+async fn handle_ws_to_tcp(mut src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
     
-    let ws = accept_async(src_stream).await.unwrap();
-    let dest_stream = TcpStream::connect(dest_location).await?;
-    let (mut dest_read, dest_write) = dest_stream.into_split();
+    let mut ws = accept_async(src_stream).await.unwrap();
+
+    let dest_stream = match TcpStream::connect(dest_location).await
+    {
+        Ok(e) => e,
+        Err(v) => {
+            let msg = tungstenite::protocol::frame::CloseFrame{reason: std::borrow::Cow::Borrowed("Could not connect to destination."), code: tungstenite::protocol::frame::coding::CloseCode::Error};
+            ws.close(Some(msg));
+            return Err(Box::new(v));
+        }
+    };
+    
+    let (mut dest_read, mut dest_write) = dest_stream.into_split();
 
     let (mut write, read) = ws.split();
 
 
     // Consume from the websocket.
-    tokio::spawn(async move {
+    let from_ws_task = tokio::spawn(async move {
         read.fold(dest_write, |mut dest_write, message| async {
                 let data = match message
                 {
@@ -121,6 +166,7 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     Err(p) => 
                     {
                         debug!("Err reading data {:?}", p);
+                        dest_write.shutdown();
                         return dest_write;
                     }
                 };
@@ -134,18 +180,26 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                             return dest_write;
                         };
                     },
+                    Message::Close(m) =>
+                    {
+                        trace!("Encountered close message {:?}", m);
+                        dest_write.shutdown();
+                        // need to somehow shut down the tcp socket here as well.
+                    }
                     other =>
                     {
                         error!("Something unhandled on the websocket: {:?}", other);
+                        dest_write.shutdown();
                     }
                 }
                 dest_write
             }).await;
+        debug!("Reached end of consume from websocket.");
     });
     
 
     // Consume from the tcp socket and write on the websocket.
-    tokio::spawn(async move {
+    let to_ws_task = tokio::spawn(async move {
         loop {
             let mut buf = vec![0; 1024];
             match dest_read.read(&mut buf).await {
@@ -153,6 +207,8 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                 // closed
                 Ok(0) => {
                     debug!("Remote tcp socket has closed.");
+                    // Need to close the websocket here somehow.
+                    write.send(Message::Close(None)).await;
                     return
                 },
                 Ok(n) => {
@@ -162,6 +218,7 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     if write.send(Message::Binary(res)).await.is_err()
                     {
                         debug!("Failed to send binary on websocket.");
+                        write.close();
                         return;
                     }
                 }
@@ -169,10 +226,12 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     // Unexpected socket error. There isn't much we can do
                     // here so just stop processing.
                     error!("bad");
+                    write.close();
                     return;
                 }
             }
         }
+        write.close();
     });
 
     Ok(())
