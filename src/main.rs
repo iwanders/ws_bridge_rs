@@ -24,7 +24,15 @@ async fn tcp_to_ws(bind_location: &str, dest_location: &str)  -> Result<(), Erro
 
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        handle_tcp_to_ws(socket, dest_location).await?;
+        match handle_tcp_to_ws(socket, dest_location).await
+        {
+            Ok(v) => {
+                info!("Succesfully setup connection; {:?}", v);
+            },
+            Err(e) => {
+                error!("{:?} (dest: {})", e, dest_location);
+            }
+        }
     }
 }
 
@@ -64,6 +72,7 @@ async fn handle_tcp_to_ws(mut src_stream: TcpStream, dest_location: &str) -> Res
                     Message::Binary(v) => v,
                     Message::Close(m) => {
                         trace!("Encountered close message {:?}", m);
+                        tcp_src_write.shutdown().await;
                         return tcp_src_write;
                     }
                     other => {
@@ -91,8 +100,6 @@ async fn handle_tcp_to_ws(mut src_stream: TcpStream, dest_location: &str) -> Res
                     debug!("Tcp read returned 0, remote has closed.");
                     // Close the websocket.
                     write.send(Message::Close(None)).await?;
-                    write.close().await?;
-                    break; // return ok from the final statement.
                 },
                 Ok(n) => {
                     trace!("from tcp: {:?}", buf[..n].to_vec());
@@ -101,16 +108,13 @@ async fn handle_tcp_to_ws(mut src_stream: TcpStream, dest_location: &str) -> Res
                     {
                         Ok(_) => {continue;},
                         Err(e) => {
+                            debug!("Error sending: {:?}", e);
                             return Err(e);
                         },
                     }
                 }
                 Err(e) => {
-                    // Unexpected socket error. There isn't much we can do
-                    // here so just stop processing.
                     error!("Unexpected error {:?}", e);
-                    // Close the websocket.
-                    write.close().await?;
                     return Err(tokio_tungstenite::tungstenite::Error::Io(e));
                 }
             }
@@ -155,6 +159,10 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                 code: tungstenite::protocol::frame::coding::CloseCode::Error
             };
             ws.send(Message::Close(Some(msg))).await;
+
+            // Ensure we collect messages until the shutdown is actually performed.
+            let (mut write, read) = ws.split();
+            read.for_each(|_message| async {}).await;
             return Err(Box::new(v));
         }
     };
@@ -173,11 +181,10 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     Err(p) => 
                     {
                         debug!("Err reading data {:?}", p);
-                        dest_write.shutdown();
+                        dest_write.shutdown().await;
                         return dest_write;
                     }
                 };
-                // let data = message.unwrap();
                 trace!("from ws {:?}, {:?}", data, dest_write);
                 match data{
                     Message::Binary(ref x) =>
@@ -190,18 +197,17 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     Message::Close(m) =>
                     {
                         trace!("Encountered close message {:?}", m);
-                        dest_write.shutdown();
+                        dest_write.shutdown().await;
                         // need to somehow shut down the tcp socket here as well.
                     }
                     other =>
                     {
                         error!("Something unhandled on the websocket: {:?}", other);
-                        dest_write.shutdown();
+                        dest_write.shutdown().await;
                     }
                 }
                 dest_write
             }).await;
-
         debug!("Reached end of consume from websocket.");
     });
     
@@ -214,10 +220,8 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                 // Return value of `Ok(0)` signifies that the remote has
                 // closed
                 Ok(0) => {
-                    debug!("Remote tcp socket has closed.");
-                    // Need to close the websocket here somehow.
+                    debug!("Remote tcp socket has closed, sending close message on websocket.");
                     write.send(Message::Close(None)).await?;
-                    write.close().await?;
                 },
                 Ok(n) => {
                     let res = buf[..n].to_vec();
@@ -227,9 +231,9 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                     {
                         Ok(_) => {continue;},
                         Err(v) => {
-                            trace!("Failed to send binary data {:?}", v);
+                            debug!("Failed to send binary data {:?}", v);
                             write.send(Message::Close(None)).await?;
-                            write.close().await?;
+                            // write.close().await?;
                             return Err(v);
                         }
                     }
