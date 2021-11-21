@@ -9,6 +9,10 @@ use tokio_tungstenite::{connect_async, accept_async, tungstenite::protocol::Mess
 
 use futures_util::StreamExt;
 
+use log::{info, trace, warn, debug, error};
+
+use env_logger::{Builder, WriteStyle};
+use log::{LevelFilter};
 
 type Error = Box<dyn std::error::Error>;
 
@@ -35,8 +39,25 @@ async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<
     tokio::spawn(async move {
         // Need fold here to pass in the output destination; https://stackoverflow.com/a/62563511
         read.fold(tcp_src_write, |mut tcp_src_write, message| async {
-                let data = message.unwrap().into_data();
-                println!("from ws {:?}", data);
+                let msg = match message
+                {
+                    Ok(v) => v,
+                    Err(p) =>
+                    {
+                        debug!("Err {:?}", p);
+                        return tcp_src_write;
+                    }
+                };
+                // let data = message.unwrap().into_data();
+                let data = match msg
+                {
+                    Message::Binary(v) => v,
+                    other => {
+                        error!("Encountered unhandled data on websocket {:?}", other);
+                        return tcp_src_write;
+                    }
+                };
+                trace!("from ws: {:?}", data);
 
                 // Write to the tcp socket.
                 tcp_src_write.write(&data).await;
@@ -54,7 +75,7 @@ async fn handle_tcp_to_ws(src_stream: TcpStream, dest_location: &str) -> Result<
                 // closed
                 Ok(0) => return,
                 Ok(n) => {
-                    println!("from tcp {:?}", buf[..n].to_vec());
+                    trace!("from tcp: {:?}", buf[..n].to_vec());
                     // send to the websocket.
                     write.send(Message::Binary(buf[..n].to_vec())).await.unwrap();
                 }
@@ -90,19 +111,32 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
 
     let (mut write, read) = ws.split();
 
+
     // Consume from the websocket.
     tokio::spawn(async move {
         read.fold(dest_write, |mut dest_write, message| async {
-                let data = message.unwrap();
-                println!("from ws {:?}, {:?}", data, dest_write);
+                let data = match message
+                {
+                    Ok(v) => v,
+                    Err(p) => 
+                    {
+                        debug!("Err reading data {:?}", p);
+                        return dest_write;
+                    }
+                };
+                // let data = message.unwrap();
+                trace!("from ws {:?}, {:?}", data, dest_write);
                 match data{
                     Message::Binary(ref x) =>
                     {
-                        dest_write.write(x).await;
+                        if dest_write.write(x).await.is_err()
+                        {
+                            return dest_write;
+                        };
                     },
                     other =>
                     {
-                        println!("Something unhandled on the websocket: {:?}", other);
+                        error!("Something unhandled on the websocket: {:?}", other);
                     }
                 }
                 dest_write
@@ -112,25 +146,29 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
 
     // Consume from the tcp socket and write on the websocket.
     tokio::spawn(async move {
-        let mut buf = vec![0; 1024];
         loop {
+            let mut buf = vec![0; 1024];
             match dest_read.read(&mut buf).await {
                 // Return value of `Ok(0)` signifies that the remote has
                 // closed
                 Ok(0) => {
-                    println!("Remote has closed");
+                    debug!("Remote tcp socket has closed.");
                     return
                 },
                 Ok(n) => {
                     let res = buf[..n].to_vec();
                     let resr = buf[..n].to_vec();
-                    println!("from tcp {:?} -> to ws", resr);
-                    write.send(Message::Binary(res)).await;
+                    trace!("from tcp {:?}", resr);
+                    if write.send(Message::Binary(res)).await.is_err()
+                    {
+                        debug!("Failed to send binary on websocket.");
+                        return;
+                    }
                 }
                 Err(_) => {
-                    println!("bad");
                     // Unexpected socket error. There isn't much we can do
                     // here so just stop processing.
+                    error!("bad");
                     return;
                 }
             }
@@ -141,13 +179,15 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
 }
 
 
+
 fn main()  -> Result<(), Error> {
     let mut app = App::new("Websocket Bridge").setting(clap::AppSettings::SubcommandRequiredElseHelp)
         .about("Allows bridging a TCP connection over a websocket..")
         .arg(
-            Arg::with_name("d")
-                .short("d")
-                .help("Debug mode."),
+            Arg::with_name("v")
+                .short("v")
+                .multiple(true)
+                .help("Verbosity, add more for more verbose mode."),
         )
         .subcommand(
             SubCommand::with_name("ws_to_tcp")
@@ -195,6 +235,29 @@ fn main()  -> Result<(), Error> {
             )));
         }
     };
+
+    let verbosity = matches.occurrences_of("v");
+    let level = match verbosity
+    {
+        0 => LevelFilter::Error,
+        1 => LevelFilter::Warn,
+        2 => LevelFilter::Info,
+        3 => LevelFilter::Debug,
+        4 => LevelFilter::Trace,
+        _ => {
+                return Err(Box::new(clap::Error::with_description(
+                    "Couldn't find dest value.",
+                    clap::ErrorKind::EmptyValue,
+                )));
+        },
+    };
+
+    let _stylish_logger = Builder::new()
+        .filter(None, level)
+        .write_style(WriteStyle::Always)
+        .init();
+
+    
 
     let rt = tokio::runtime::Runtime::new().unwrap();
 
