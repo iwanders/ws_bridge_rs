@@ -592,6 +592,7 @@ name = "ws_bridge_rs"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "futures-util",
  "tokio",
  "tokio-tungstenite",
 ]
