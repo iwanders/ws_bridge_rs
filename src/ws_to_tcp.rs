@@ -1,4 +1,3 @@
-
 use futures_util::StreamExt;
 use tokio::io::AsyncReadExt;
 use tokio::net::{TcpListener, TcpStream};
@@ -6,9 +5,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::protocol::Message};
 type Error = Box<dyn std::error::Error>;
-use log::{debug, error, info, trace, warn};
 use crate::tokio::io::AsyncWriteExt;
 use futures_util::SinkExt;
+use log::{debug, error, info, trace, warn};
 
 pub async fn ws_to_tcp(bind_location: &str, dest_location: &str) -> Result<(), Error> {
     let listener = TcpListener::bind(bind_location).await.unwrap();
@@ -27,7 +26,6 @@ pub async fn ws_to_tcp(bind_location: &str, dest_location: &str) -> Result<(), E
 }
 
 async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<(), Error> {
-
     // Convert the source stream into a websocket connection.
     let mut ws = accept_async(src_stream).await?;
 
@@ -59,8 +57,7 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
     let task_ws_to_tcp = tokio::spawn(async move {
         loop {
             let message = read.next().await;
-            if message.is_none()
-            {
+            if message.is_none() {
                 debug!("Got none, end of stream.");
                 break;
             }
@@ -124,16 +121,18 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
                 Err(e) => {
                     // Unexpected socket error. There isn't much we can do here so just stop
                     // processing, and close the tcp socket.
-                    error!("Something unexpected happened reading from the tcp socket: {:?}", e);
+                    error!(
+                        "Something unexpected happened reading from the tcp socket: {:?}",
+                        e
+                    );
                     break;
                 }
             }
         }
 
         // Send the websocket close message.
-        if let Err(v) = write.send(Message::Close(None)).await
-        {
-           error!("Failed to send close message to websocket.");
+        if let Err(v) = write.send(Message::Close(None)).await {
+            error!("Failed to send close message to websocket.");
         }
         debug!("Reached end of consume from tcp.");
         (dest_read, write)
@@ -143,32 +142,42 @@ async fn handle_ws_to_tcp(src_stream: TcpStream, dest_location: &str) -> Result<
     tokio::spawn(async move {
         // Wait for both tasks to complete.
         let (r_ws_to_tcp, r_tcp_to_ws) = tokio::join!(task_ws_to_tcp, task_tcp_to_ws);
-        if let Err(ref v) = r_ws_to_tcp
-        {
-            error!("Error joining: {:?}, dropping connection without proper close.", v);
+        if let Err(ref v) = r_ws_to_tcp {
+            error!(
+                "Error joining: {:?}, dropping connection without proper close.",
+                v
+            );
             return;
         }
         let (dest_write, read) = r_ws_to_tcp.unwrap();
 
-        if let Err(ref v) = r_tcp_to_ws
-        {
-            error!("Error joining: {:?}, dropping connection without proper close.", v);
+        if let Err(ref v) = r_tcp_to_ws {
+            error!(
+                "Error joining: {:?}, dropping connection without proper close.",
+                v
+            );
             return;
         }
         let (dest_read, write) = r_tcp_to_ws.unwrap();
 
         // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
         let mut tcp_stream = dest_write.reunite(dest_read).unwrap();
-        if let Err(ref v) = tcp_stream.shutdown().await
-        {
-            error!("Error properly closing the tcp from {:?}: {:?}", tcp_stream.peer_addr(), v);
+        if let Err(ref v) = tcp_stream.shutdown().await {
+            error!(
+                "Error properly closing the tcp from {:?}: {:?}",
+                tcp_stream.peer_addr(),
+                v
+            );
             return;
         }
 
         let mut ws_stream = write.reunite(read).unwrap();
-        if let Err(ref v) = ws_stream.get_mut().shutdown().await
-        {
-            error!("Error properly closing the ws from {:?}: {:?}", ws_stream.get_ref().peer_addr(), v);
+        if let Err(ref v) = ws_stream.get_mut().shutdown().await {
+            error!(
+                "Error properly closing the ws from {:?}: {:?}",
+                ws_stream.get_ref().peer_addr(),
+                v
+            );
             return;
         }
         debug!("Properly closed connections.");

@@ -7,11 +7,11 @@ use log::LevelFilter;
 
 type Error = Box<dyn std::error::Error>;
 
-mod ws_to_tcp;
 mod tcp_to_ws;
+mod ws_to_tcp;
 
-use ws_to_tcp::ws_to_tcp;
 use tcp_to_ws::tcp_to_ws;
+use ws_to_tcp::ws_to_tcp;
 
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
