@@ -9,6 +9,7 @@ type Error = Box<dyn std::error::Error>;
 
 mod tcp_to_ws;
 mod ws_to_tcp;
+mod common;
 
 use tcp_to_ws::tcp_to_ws;
 use ws_to_tcp::ws_to_tcp;
