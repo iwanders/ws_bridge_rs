@@ -1,13 +1,6 @@
-use futures_util::StreamExt;
-use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
-
-use tokio_tungstenite::tungstenite;
-use tokio_tungstenite::{accept_async, connect_async, tungstenite::protocol::Message};
+use tokio::net::TcpListener;
 type Error = Box<dyn std::error::Error>;
-use crate::tokio::io::AsyncWriteExt;
-use futures_util::SinkExt;
-use log::{debug, error, info, trace, warn};
+use log::{error, info};
 
 use crate::common::{communicate, TcpOrDestination};
 
@@ -16,8 +9,12 @@ pub async fn tcp_to_ws(bind_location: &str, dest_location: &str) -> Result<(), E
 
     loop {
         let (socket, _) = listener.accept().await.unwrap();
-        match communicate(TcpOrDestination::Dest(dest_location.to_owned()), TcpOrDestination::Tcp(socket)).await {
-
+        match communicate(
+            TcpOrDestination::Dest(dest_location.to_owned()),
+            TcpOrDestination::Tcp(socket),
+        )
+        .await
+        {
             Ok(v) => {
                 info!("Succesfully setup connection; {:?}", v);
             }

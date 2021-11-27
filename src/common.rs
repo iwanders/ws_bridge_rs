@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use tokio::io::AsyncReadExt;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpStream;
 
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::protocol::Message};
@@ -9,46 +9,40 @@ use crate::tokio::io::AsyncWriteExt;
 use futures_util::SinkExt;
 use log::{debug, error, info, trace, warn};
 
-pub enum TcpOrDestination
-{
+pub enum TcpOrDestination {
     Tcp(TcpStream),
     Dest(String),
 }
 
 pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> Result<(), Error> {
     let mut ws;
-    let mut tcp;
+    let tcp;
 
-    match tcp_in
-    {
+    match tcp_in {
         TcpOrDestination::Tcp(src_stream) => {
             // Convert the source stream into a websocket connection.
             ws = accept_async(tokio_tungstenite::MaybeTlsStream::Plain(src_stream)).await?;
-        },
-        TcpOrDestination::Dest(dest_location)  => {
+        }
+        TcpOrDestination::Dest(dest_location) => {
             let (wsz, _) = match connect_async(dest_location).await {
                 Ok(v) => v,
                 Err(e) => {
                     warn!("Something went wrong connecting {:?}", e);
-                    if let TcpOrDestination::Tcp(mut v) = ws_in 
-                    {
+                    if let TcpOrDestination::Tcp(mut v) = ws_in {
                         v.shutdown().await?;
                     }
                     return Err(Box::new(e));
                 }
             };
             ws = wsz;
-        },
+        }
     }
 
-
-    match ws_in
-    {
+    match ws_in {
         TcpOrDestination::Tcp(v) => {
             tcp = v;
-        },
+        }
         TcpOrDestination::Dest(dest_location) => {
-
             // Try to setup the tcp stream we'll be communicating to, if this fails, we close the websocket.
             tcp = match TcpStream::connect(dest_location).await {
                 Ok(e) => e,
@@ -59,18 +53,18 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                     };
 
                     // Send the websocket close message.
-                    ws.send(Message::Close(Some(msg))).await;
+                    if let Err(e) = ws.send(Message::Close(Some(msg))).await {
+                        warn!("Tried to send close message, but this failed {:?}", e);
+                    }
 
                     // Ensure we collect messages until the shutdown is actually performed.
-                    let (mut write, read) = ws.split();
+                    let (mut _write, read) = ws.split();
                     read.for_each(|_message| async {}).await;
                     return Err(Box::new(v));
                 }
             }
-
         }
     }
-
 
     // We got the tcp connection setup, split both streams in their read and write parts
     let (mut dest_read, mut dest_write) = tcp.into_split();
@@ -81,7 +75,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     // Consume from the websocket, if this loop quits, we return both things we took ownership of.
     let task_ws_to_tcp = tokio::spawn(async move {
         loop {
-            tokio::select!{
+            tokio::select! {
                 message = read.next() => {
                     if message.is_none() {
                         debug!("Got none, end of stream.");
@@ -114,14 +108,17 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                         }
                     }
                 },
-                shutdown_received = (&mut shutdown_from_tcp_rx ) => 
+                _shutdown_received = (&mut shutdown_from_tcp_rx ) =>
                 {
                     break;
                 }
             }
         }
         debug!("Reached end of consume from websocket.");
-        shutdown_from_ws_tx.send(true);
+        if let Err(_) = shutdown_from_ws_tx.send(true) {
+            // This happens if the shutdown happens from the other side.
+            // error!("Could not send shutdown signal: {:?}", v);
+        }
         (dest_write, read)
     });
 
@@ -131,7 +128,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
         loop {
             let mut buf = vec![0; 1024];
 
-            tokio::select!{
+            tokio::select! {
                 res = dest_read.read(&mut buf) => {
                     // Return value of `Ok(0)` signifies that the remote has closed, if this happens
                     // we want to initiate shutting down the websocket.
@@ -165,7 +162,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                         }
                     }
                 },
-                shutdown_received = (&mut shutdown_from_ws_rx ) => 
+                _shutdown_received = (&mut shutdown_from_ws_rx ) =>
                 {
                     need_close = false;
                     break;
@@ -174,15 +171,17 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
         }
 
         // Send the websocket close message.
-        if (need_close)
-        {
+        if need_close {
             if let Err(v) = write.send(Message::Close(None)).await {
-                error!("Failed to send close message to websocket.");
+                error!("Failed to send close message to websocket: {:?}", v);
             }
         }
-        shutdown_from_tcp_tx.send(true);
+        if let Err(_) = shutdown_from_tcp_tx.send(true) {
+            // This happens if the shutdown happens from the other side.
+            // error!("Could not send shutdown signal: {:?}", v);
+        }
         debug!("Reached end of consume from tcp.");
-        (dest_read, write)
+        (dest_read, write, need_close)
     });
 
     // Finally, the cleanup task, all it does is close down the tcp connections.
@@ -205,7 +204,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             );
             return;
         }
-        let (dest_read, write) = r_tcp_to_ws.unwrap();
+        let (dest_read, write, ws_need_close) = r_tcp_to_ws.unwrap();
 
         // Reunite the streams, this is guaranteed to succeed as we always use the correct parts.
         let mut tcp_stream = dest_write.reunite(dest_read).unwrap();
@@ -218,14 +217,15 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             return;
         }
 
-        let mut ws_stream = write.reunite(read).unwrap();
-        if let Err(ref v) = ws_stream.get_mut().shutdown().await {
-            error!(
-                "Error properly closing the ws from {:?}: {:?}",
-                "something",
-                v
-            );
-            return;
+        if ws_need_close {
+            let mut ws_stream = write.reunite(read).unwrap();
+            if let Err(ref v) = ws_stream.get_mut().shutdown().await {
+                error!(
+                    "Error properly closing the ws from {:?}: {:?}",
+                    "something", v
+                );
+                return;
+            }
         }
         debug!("Properly closed connections.");
     });
