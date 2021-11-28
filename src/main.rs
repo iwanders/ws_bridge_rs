@@ -13,7 +13,7 @@ mod common;
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
 fn main() -> Result<(), Error> {
-    let mut app = App::new("Websocket Bridge")
+    let app = App::new("Websocket Bridge")
         .about("Allows bridging a TCP connection over a websocket.")
         .arg(
             Arg::with_name("v")

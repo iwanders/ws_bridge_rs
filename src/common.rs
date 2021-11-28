@@ -138,7 +138,6 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                         }
                         Ok(n) => {
                             let res = buf[..n].to_vec();
-                            debug!("N: {:?}", n);
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
                                     continue;
@@ -245,6 +244,8 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> 
         {
             Direction::WsToTcp => {
                 let (socket, _) = listener.accept().await.unwrap();
+                
+                info!("Accepting ws connection from {:?}", socket.peer_addr());
                 TcpOrDestination::Tcp(socket)
             },
             Direction::TcpToWs => {
@@ -257,6 +258,7 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> 
             Direction::WsToTcp => TcpOrDestination::Dest(dest_location.to_owned()),
             Direction::TcpToWs => {
                 let (socket, _) = listener.accept().await.unwrap();
+                info!("Accepting tcp connection from {:?}", socket.peer_addr());
                 TcpOrDestination::Tcp(socket)
             },
         };
@@ -266,11 +268,11 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> 
         )
         .await
         {
-            Ok(v) => {
-                info!("Succesfully setup connection; {:?}", v);
+            Ok(_v) => {
+                info!("Succesfully setup communication.");
             }
             Err(e) => {
-                error!("{:?} (dest: {})", e, dest_location);
+                error!("Failed to start server {:?} (dest: {})", e, dest_location);
             }
         }
     }
