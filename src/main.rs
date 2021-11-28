@@ -9,7 +9,6 @@ type Error = Box<dyn std::error::Error>;
 
 mod common;
 
-
 // helpful example; https://github.com/snapview/tokio-tungstenite/issues/137
 
 fn main() -> Result<(), Error> {
@@ -23,11 +22,11 @@ fn main() -> Result<(), Error> {
         )
         .arg(
             Arg::with_name("mode")
-            .possible_value("ws_to_tcp")
-            .possible_value("tcp_to_ws")
-            .takes_value(true)
-            .required(true)
-            .help("The direction of transfer."),
+                .possible_value("ws_to_tcp")
+                .possible_value("tcp_to_ws")
+                .takes_value(true)
+                .required(true)
+                .help("The direction of transfer."),
         )
         .arg(
             Arg::with_name("bind")
@@ -78,24 +77,25 @@ fn main() -> Result<(), Error> {
             clap::ErrorKind::EmptyValue,
         ))?;
 
-
     let rt = tokio::runtime::Runtime::new().unwrap();
 
-    let direction = match matches.value_of("mode").ok_or(clap::Error::with_description(
+    let direction = match matches
+        .value_of("mode")
+        .ok_or(clap::Error::with_description(
             "Couldn't find mode value.",
             clap::ErrorKind::EmptyValue,
-        ))?
-    {
+        ))? {
         "ws_to_tcp" => common::Direction::WsToTcp,
         "tcp_to_ws" => common::Direction::TcpToWs,
-        &_ => {panic!("Can't happen");}
+        &_ => {
+            panic!("Can't happen");
+        }
     };
 
     rt.block_on(async {
         let res = common::serve(bind_value, dest_value, direction).await;
         println!("{:?}", res);
     });
-
 
     Ok(())
 }
