@@ -90,7 +90,6 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                             break;
                         }
                     };
-                    trace!("from ws {:?}, {:?}", data, dest_write);
                     match data {
                         Message::Binary(ref x) => {
                             if dest_write.write(x).await.is_err() {
@@ -125,8 +124,8 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     // Consume from the tcp socket and write on the websocket.
     let task_tcp_to_ws = tokio::spawn(async move {
         let mut need_close = true;
+        let mut buf = vec![0; 1024 * 1024 * 10];
         loop {
-            let mut buf = vec![0; 1024];
 
             tokio::select! {
                 res = dest_read.read(&mut buf) => {
@@ -139,8 +138,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                         }
                         Ok(n) => {
                             let res = buf[..n].to_vec();
-                            let resr = buf[..n].to_vec();
-                            trace!("tcp -> ws: {:?}", resr);
+                            debug!("N: {:?}", n);
                             match write.send(Message::Binary(res)).await {
                                 Ok(_) => {
                                     continue;
