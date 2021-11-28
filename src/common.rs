@@ -1,6 +1,6 @@
 use futures_util::StreamExt;
 use tokio::io::AsyncReadExt;
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, TcpListener};
 
 use tokio_tungstenite::tungstenite;
 use tokio_tungstenite::{accept_async, connect_async, tungstenite::protocol::Message};
@@ -232,3 +232,49 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
 
     Ok(())
 }
+
+pub enum Direction
+{
+    WsToTcp,
+    TcpToWs,
+}
+
+pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> Result<(), Error> {
+    let listener = TcpListener::bind(bind_location).await.unwrap();
+
+    loop {
+        let in1 = match dir
+        {
+            Direction::WsToTcp => {
+                let (socket, _) = listener.accept().await.unwrap();
+                TcpOrDestination::Tcp(socket)
+            },
+            Direction::TcpToWs => {
+                let proto_addition = if &dest_location[..2] != "ws" { "ws://" } else { "" };
+                TcpOrDestination::Dest(proto_addition.to_owned() + dest_location)
+            },
+        };
+        let in2 = match dir
+        {
+            Direction::WsToTcp => TcpOrDestination::Dest(dest_location.to_owned()),
+            Direction::TcpToWs => {
+                let (socket, _) = listener.accept().await.unwrap();
+                TcpOrDestination::Tcp(socket)
+            },
+        };
+        match communicate(
+            in1,
+            in2,
+        )
+        .await
+        {
+            Ok(v) => {
+                info!("Succesfully setup connection; {:?}", v);
+            }
+            Err(e) => {
+                error!("{:?} (dest: {})", e, dest_location);
+            }
+        }
+    }
+}
+
