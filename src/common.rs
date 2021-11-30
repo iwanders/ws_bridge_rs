@@ -78,7 +78,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
             tokio::select! {
                 message = read.next() => {
                     if message.is_none() {
-                        debug!("Got none, end of stream.");
+                        debug!("Got none, end of websocket stream.");
                         break;
                     }
                     let message = message.unwrap();
@@ -124,7 +124,7 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
     // Consume from the tcp socket and write on the websocket.
     let task_tcp_to_ws = tokio::spawn(async move {
         let mut need_close = true;
-        let mut buf = vec![0; 1024 * 1024 * 10];
+        let mut buf = vec![0; 1024 * 1024];
         loop {
             tokio::select! {
                 res = dest_read.read(&mut buf) => {
@@ -235,14 +235,23 @@ pub enum Direction {
 }
 
 pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> Result<(), Error> {
-    let listener = TcpListener::bind(bind_location).await.unwrap();
+    let listener = TcpListener::bind(bind_location)
+        .await
+        .expect("Could not bind to port");
+    info!("Succesfully bound to {:?}", bind_location);
 
     loop {
         let in1 = match dir {
             Direction::WsToTcp => {
-                let (socket, _) = listener.accept().await.unwrap();
+                let (socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("Could not accept connection?");
 
-                info!("Accepting ws connection from {:?}", socket.peer_addr());
+                info!(
+                    "Accepting ws connection from {:?}",
+                    socket.peer_addr().unwrap()
+                );
                 TcpOrDestination::Tcp(socket)
             }
             Direction::TcpToWs => {
@@ -257,8 +266,14 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> 
         let in2 = match dir {
             Direction::WsToTcp => TcpOrDestination::Dest(dest_location.to_owned()),
             Direction::TcpToWs => {
-                let (socket, _) = listener.accept().await.unwrap();
-                info!("Accepting tcp connection from {:?}", socket.peer_addr());
+                let (socket, _) = listener
+                    .accept()
+                    .await
+                    .expect("Could not accept connection?");
+                info!(
+                    "Accepting tcp connection from {:?}",
+                    socket.peer_addr().unwrap()
+                );
                 TcpOrDestination::Tcp(socket)
             }
         };
@@ -267,7 +282,10 @@ pub async fn serve(bind_location: &str, dest_location: &str, dir: Direction) -> 
                 info!("Succesfully setup communication.");
             }
             Err(e) => {
-                error!("Failed to start server {:?} (dest: {})", e, dest_location);
+                error!(
+                    "Failed to connect to server {:?} (dest: {})",
+                    e, dest_location
+                );
             }
         }
     }

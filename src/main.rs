@@ -18,7 +18,7 @@ fn main() -> Result<(), Error> {
             Arg::with_name("v")
                 .short("v")
                 .multiple(true)
-                .help("Verbosity, add more for more verbose mode."),
+                .help("Verbosity, add more for more verbose output."),
         )
         .arg(
             Arg::with_name("mode")
@@ -38,7 +38,9 @@ fn main() -> Result<(), Error> {
             Arg::with_name("dest")
                 .takes_value(true)
                 .required(true)
-                .help("ip:port to send to."),
+                .help(
+                    "ip:port to send to (for websockets; ip:port, [ws[s]://]example.com/sub/path)",
+                ),
         );
 
     let matches = app.clone().get_matches();
@@ -88,13 +90,13 @@ fn main() -> Result<(), Error> {
         "ws_to_tcp" => common::Direction::WsToTcp,
         "tcp_to_ws" => common::Direction::TcpToWs,
         &_ => {
-            panic!("Can't happen");
+            panic!("Got unknown direction, shouldn't be possible.");
         }
     };
 
     rt.block_on(async {
         let res = common::serve(bind_value, dest_value, direction).await;
-        println!("{:?}", res);
+        panic!("Serve returned with {:?}", res);
     });
 
     Ok(())

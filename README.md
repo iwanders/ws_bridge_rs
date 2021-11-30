@@ -29,6 +29,8 @@ nc -l 127.0.0.1 3002
 nc 127.0.0.1 3000
 ```
 
+Websocket destinations can include sub paths such; `ws://127.0.0.1:3002/sub/path`.
+
 Performance
 -----------
 Benchmark using `iperf` and the above two `ws_bridge_rs` instances.
