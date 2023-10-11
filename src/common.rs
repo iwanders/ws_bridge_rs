@@ -96,6 +96,11 @@ pub async fn communicate(tcp_in: TcpOrDestination, ws_in: TcpOrDestination) -> R
                                 break;
                             };
                         }
+                        Message::Text(ref x) => {
+                            if dest_write.write(x.as_bytes()).await.is_err() {
+                                break;
+                            }
+                        }
                         Message::Close(m) => {
                             trace!("Encountered close message {:?}", m);
                             // dest_write.shutdown().await?;
