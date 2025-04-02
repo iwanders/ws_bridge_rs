@@ -1,6 +1,10 @@
 ws_bridge_rs
 ============
 
+> [!IMPORTANT]  
+> The fork over at https://github.com/FAForever/ws_bridge_rs is more actively
+> maintained than this original source, I recommend using their version.
+
 Simple command line utility to forward a tcp connection over a websocket and vice versa. It's a Rust
 rewrite of my Python [ws_bridge](https://github.com/iwanders/ws_bridge_py) package using
 [tokio.rs](https://tokio.rs/) and `async` Rust.
